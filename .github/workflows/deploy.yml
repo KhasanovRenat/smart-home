@@ -1,0 +1,144 @@
+name: Smart Home CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smart-home-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: admin
+          POSTGRES_PASSWORD: ci-db-password
+          POSTGRES_DB: smarthome_db
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U admin -d smarthome_db"
+          --health-interval 5s --health-timeout 3s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r backend/requirements-test.txt
+      - run: python -m pytest -q
+        working-directory: backend
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PASSWORD: ci-db-password
+          APP_PASSWORD: ci-app-password
+          JWT_SECRET: ci-only-long-test-signing-key-2026
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: frontend
+
+  images:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          docker build -t smart-home-backend:ci ./backend
+          docker build -t smart-home-frontend:ci ./frontend
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: smart-home-backend:ci
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: smart-home-frontend:ci
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          skip-setup-trivy: true
+      - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main' && vars.PUBLISH_IMAGES == 'true'
+        with:
+          username: ${{ vars.DOCKER_HUB_NAMESPACE }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+      - name: Publish images with commit SHA
+        if: github.ref == 'refs/heads/main' && vars.PUBLISH_IMAGES == 'true'
+        env:
+          IMAGE_PREFIX: ${{ vars.DOCKER_HUB_NAMESPACE }}
+        run: |
+          for component in backend frontend; do
+            image="$IMAGE_PREFIX/smart-home-$component:$GITHUB_SHA"
+            docker tag "smart-home-$component:ci" "$image"
+            docker push "$image"
+          done
+
+  terraform:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+          terraform_wrapper: false
+      - run: |
+          terraform fmt -check
+          terraform init -backend=false -input=false
+          terraform validate
+        working-directory: terraform
+
+  deploy-ec2:
+    if: github.ref == 'refs/heads/main' && vars.PUBLISH_IMAGES == 'true' && vars.DEPLOY_AWS == 'true'
+    needs: [images, terraform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'eu-central-1' }}
+      TF_VAR_app_secret_arn: ${{ vars.APP_SECRET_ARN }}
+      TF_VAR_release_bucket: ${{ vars.TF_STATE_BUCKET }}
+      IMAGE_PREFIX: ${{ vars.DOCKER_HUB_NAMESPACE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+          terraform_wrapper: false
+      - run: |
+          terraform init -input=false \
+            -backend-config="bucket=$TF_VAR_release_bucket" \
+            -backend-config="region=$AWS_DEFAULT_REGION" \
+            -backend-config="key=smart-home/terraform.tfstate" \
+            -backend-config="encrypt=true" -backend-config="use_lockfile=true"
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false tfplan
+        working-directory: terraform
+      - run: bash deploy/release-ec2.sh
+
+  deploy-eks:
+    if: github.ref == 'refs/heads/main' && vars.PUBLISH_IMAGES == 'true' && vars.DEPLOY_EKS == 'true'
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      IMAGE_PREFIX: ${{ vars.DOCKER_HUB_NAMESPACE }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash deploy/release-gitops.sh

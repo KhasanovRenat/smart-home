@@ -1,0 +1,158 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: prometheus}
+spec:
+  selector: {matchLabels: {app: prometheus}}
+  template:
+    metadata: {labels: {app: prometheus}}
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.5.0
+          args: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus]
+          ports: [{containerPort: 9090}]
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+            - {name: data, mountPath: /prometheus}
+      volumes:
+        - {name: config, configMap: {name: prometheus-config}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: prometheus}
+spec:
+  selector: {app: prometheus}
+  ports: [{port: 9090}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: alertmanager}
+spec:
+  selector: {matchLabels: {app: alertmanager}}
+  template:
+    metadata: {labels: {app: alertmanager}}
+    spec:
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.28.1
+          args: [--config.file=/etc/alertmanager/alertmanager.yml, --storage.path=/alertmanager, --cluster.listen-address=]
+          ports: [{containerPort: 9093}]
+          volumeMounts:
+            - {name: config, mountPath: /etc/alertmanager, readOnly: true}
+            - {name: data, mountPath: /alertmanager}
+      volumes:
+        - {name: config, configMap: {name: alertmanager-config}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: alertmanager}
+spec:
+  selector: {app: alertmanager}
+  ports: [{port: 9093}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: grafana}
+spec:
+  selector: {matchLabels: {app: grafana}}
+  template:
+    metadata: {labels: {app: grafana}}
+    spec:
+      securityContext: {fsGroup: 472}
+      containers:
+        - name: grafana
+          image: grafana/grafana:12.1.0
+          ports: [{containerPort: 3000}]
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: smart-home-secrets, key: GRAFANA_ADMIN_PASSWORD}
+          volumeMounts:
+            - {name: datasources, mountPath: /etc/grafana/provisioning/datasources, readOnly: true}
+            - {name: dashboards, mountPath: /etc/grafana/provisioning/dashboards, readOnly: true}
+            - {name: dashboard-json, mountPath: /var/lib/grafana/dashboards, readOnly: true}
+            - {name: data, mountPath: /var/lib/grafana}
+      volumes:
+        - {name: datasources, configMap: {name: grafana-datasources}}
+        - {name: dashboards, configMap: {name: grafana-dashboards}}
+        - {name: dashboard-json, configMap: {name: grafana-dashboard-json}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: grafana}
+spec:
+  selector: {app: grafana}
+  ports: [{port: 3000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: loki}
+spec:
+  selector: {matchLabels: {app: loki}}
+  template:
+    metadata: {labels: {app: loki}}
+    spec:
+      securityContext: {fsGroup: 10001}
+      containers:
+        - name: loki
+          image: grafana/loki:3.5.0
+          args: [-config.file=/etc/loki/loki.yml]
+          ports: [{containerPort: 3100}]
+          volumeMounts:
+            - {name: config, mountPath: /etc/loki, readOnly: true}
+            - {name: data, mountPath: /loki}
+      volumes:
+        - {name: config, configMap: {name: loki-config}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: loki}
+spec:
+  selector: {app: loki}
+  ports: [{port: 3100}]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: alloy}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: alloy}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: alloy}
+subjects:
+  - {kind: ServiceAccount, name: alloy, namespace: smart-home}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: alloy}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: alloy}
+spec:
+  selector: {matchLabels: {app: alloy}}
+  template:
+    metadata: {labels: {app: alloy}}
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.10.0
+          args: [run, --storage.path=/data, /etc/alloy/config.alloy]
+          volumeMounts:
+            - {name: config, mountPath: /etc/alloy, readOnly: true}
+            - {name: data, mountPath: /data}
+      volumes:
+        - {name: config, configMap: {name: alloy-config}}
+        - {name: data, emptyDir: {}}

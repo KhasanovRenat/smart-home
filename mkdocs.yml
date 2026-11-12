@@ -1,0 +1,10 @@
+site_name: Умный дом
+theme:
+  name: material
+  language: ru
+nav:
+  - Главная: index.md
+  - Архитектура: architecture.md
+  - Развертывание: deployment.md
+  - Мониторинг: monitoring.md
+  - Безопасность: security.md

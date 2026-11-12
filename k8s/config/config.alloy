@@ -1,0 +1,38 @@
+discovery.kubernetes "pods" {
+  role = "pod"
+  namespaces {
+    names = ["smart-home"]
+  }
+}
+
+discovery.relabel "backend" {
+  targets = discovery.kubernetes.pods.targets
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app"]
+    regex = "backend"
+    action = "keep"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    target_label = "container"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    target_label = "pod"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label = "namespace"
+  }
+}
+
+loki.source.kubernetes "backend" {
+  targets = discovery.relabel.backend.output
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

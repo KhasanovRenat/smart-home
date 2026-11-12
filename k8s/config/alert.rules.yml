@@ -1,0 +1,17 @@
+groups:
+  - name: smart-home
+    rules:
+      - alert: SmartHomeBackendUnavailable
+        expr: up{job="fastapi"} == 0 or absent(up{job="fastapi"})
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus не получает метрики FastAPI"
+      - alert: SmartHomeBackendHighCPU
+        expr: rate(process_cpu_seconds_total{job="fastapi"}[1m]) * 100 > 80
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "FastAPI использует более 80% одного ядра"

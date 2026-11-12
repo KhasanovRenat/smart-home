@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: backend}
+  template:
+    metadata:
+      labels: {app: backend}
+    spec:
+      containers:
+        - name: backend
+          image: smart-home-backend:local
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8000}]
+          env:
+            - {name: DB_HOST, value: postgres}
+            - {name: DB_USER, value: admin}
+            - {name: DB_NAME, value: smarthome_db}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: smart-home-secrets, key: DB_PASSWORD}
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: smart-home-secrets, key: APP_PASSWORD}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef: {name: smart-home-secrets, key: JWT_SECRET}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+spec:
+  selector: {app: backend}
+  ports: [{name: http, port: 8000, targetPort: http}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-metrics
+spec:
+  clusterIP: None
+  selector: {app: backend}
+  ports: [{name: http, port: 8000, targetPort: http}]

@@ -1,0 +1,5 @@
+route:
+  receiver: local
+  group_by: [alertname]
+receivers:
+  - name: local

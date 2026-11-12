@@ -1,0 +1,74 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-smart-home-backend:local}
+    build: ./backend
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_USER: ${DB_USER:-admin}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME:-smarthome_db}
+      DB_SSLMODE: ${DB_SSLMODE:-prefer}
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+  frontend:
+    image: ${FRONTEND_IMAGE:-smart-home-frontend:local}
+    build: ./frontend
+    ports: ["${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3000}:3000"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+  postgres:
+    image: postgres:15
+    profiles: [local]
+    environment:
+      POSTGRES_DB: smarthome_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, admin, -d, smarthome_db]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./k8s/config/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+    restart: unless-stopped
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    ports: ["127.0.0.1:9093:9093"]
+    volumes:
+      - ./k8s/config/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    restart: unless-stopped
+  grafana:
+    image: grafana/grafana:12.1.0
+    ports: ["127.0.0.1:3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/datasources.yml:/etc/grafana/provisioning/datasources/smart-home.yml:ro
+      - ./k8s/config/dashboards.yml:/etc/grafana/provisioning/dashboards/smart-home.yml:ro
+      - ./k8s/config/smart-home.json:/var/lib/grafana/dashboards/smart-home.json:ro
+    depends_on: [prometheus]
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  grafana_data:
